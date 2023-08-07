@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32 # sequences processed in parallel
 block_size = 8 # maximum context length for predictions
-max_iters = 3000
-eval_interval = 300
-learning_rate = 1e-2
+max_iters = 5000
+eval_interval = 500
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32
@@ -57,6 +57,32 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B,T,C = x.shape
+        # apply linear transformation to data
+        # create key & query vectors to compute attention scores
+        k = self.key(x)
+        q = self.query(x)
+        # calculate the unnormalized attention weights
+        # scale by C**-0.5 to prevent dot products from growing too large as C increases
+        wei = q @ k.transpose(-2, -1) * C**-0.5
+        # apply mask to attention weights
+        # ensures each token only attends to previous tokens and itself
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=1)
+        v = self.value(x)
+        out = wei @ v
+        return out
+
 class BigramLanguageModel(nn.Module):
     
     def __init__(self):
@@ -64,6 +90,7 @@ class BigramLanguageModel(nn.Module):
         # reduce the size of each word's vector representation
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.sa_head = Head(n_embd)
         # transform lower-dimensional embeddings back to original size for prediction
         self.lm_head = nn.Linear(n_embd, vocab_size)
         
@@ -76,6 +103,7 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))
         # combine token and positional embeddings
         x = tok_emb + pos_emb
+        x = self.sa_head(x)
         logits = self.lm_head(x)
         
         if targets is None:
@@ -91,8 +119,10 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # for this model, characters and tokens are used interchangeably
         for _ in range(max_new_tokens):
+            # crop idx to the last block_size
+            idx_cond = idx[:, -block_size:]
             # compute the forward pass given the current sequence
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # select the logit corresponding to the last token
             # the prediction only depends on the last token
             logits = logits[:, -1, :]
