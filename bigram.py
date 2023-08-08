@@ -82,6 +82,27 @@ class Head(nn.Module):
         v = self.value(x)
         out = wei @ v
         return out
+    
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self, num_heads, head_size):
+        super().__init__() # calls initialization of nn.Module
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        # concatenate along the last dimension of the tensor
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+    
+class FeedForward(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 class BigramLanguageModel(nn.Module):
     
@@ -90,7 +111,8 @@ class BigramLanguageModel(nn.Module):
         # reduce the size of each word's vector representation
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.sa_head = Head(n_embd)
+        self.sa_heads = MultiHeadAttention(4, n_embd//4)
+        self.ffwd = FeedForward(n_embd)
         # transform lower-dimensional embeddings back to original size for prediction
         self.lm_head = nn.Linear(n_embd, vocab_size)
         
@@ -103,7 +125,8 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))
         # combine token and positional embeddings
         x = tok_emb + pos_emb
-        x = self.sa_head(x)
+        x = self.sa_heads(x)
+        x = self.ffwd(x)
         logits = self.lm_head(x)
         
         if targets is None:
