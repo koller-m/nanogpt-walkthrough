@@ -79,7 +79,9 @@ class Head(nn.Module):
         q = self.query(x)
         # calculate the unnormalized attention weights
         # scale by C**-0.5 to prevent dot products from growing too large as C increases
-        wei = q @ k.transpose(-2, -1) * C**-0.5
+        # wei = q @ k.transpose(-2, -1) * C**-0.5
+        # scale using the last dimension of k
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5
         # apply mask to attention weights
         # ensures each token only attends to previous tokens and itself
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
@@ -94,7 +96,8 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__() # calls initialization of nn.Module
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd)
+        # self.proj = nn.Linear(n_embd, n_embd)
+        self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -140,8 +143,19 @@ class BigramLanguageModel(nn.Module):
         # self.sa_heads = MultiHeadAttention(4, n_embd//4)
         # self.ffwd = FeedForward(n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
         # transform lower-dimensional embeddings back to original size for prediction
         self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.apply(self._init_weights)
+
+    # define weight initialization
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
     def forward(self, idx, targets=None):
         # get tensor dimension
@@ -155,6 +169,7 @@ class BigramLanguageModel(nn.Module):
         # x = self.sa_heads(x)
         # x = self.ffwd(x)
         x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x)
         
         if targets is None:
